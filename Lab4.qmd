@@ -1,0 +1,183 @@
+---
+title: "Lab 4"
+author: "Diana Tang"
+format: 
+  html:
+    embed-resources: true
+editor: visual
+---
+
+Libraries
+
+```{r}
+library(lubridate)
+library(tidyverse)
+library(data.table)
+library(ggplot2)
+library(leaflet)
+```
+
+### 1: Read in the Data
+
+```{r}
+if (!file.exists("met_all.gz"))
+  download.file(
+    url = "https://raw.githubusercontent.com/USCbiostats/data-science-data/master/02_met/met_all.gz",
+    destfile = "met_all.gz",
+    method   = "libcurl",
+    timeout  = 60
+    )
+met <- data.table::fread("met_all.gz")
+```
+
+### 2: Prepare the data
+
+```{r}
+#Remove temperatures less than -17c
+met <- met[temp>-17]
+met <- met[order(temp)]
+head(met)
+```
+
+```{r}
+#check met
+summary(met$elev)
+```
+
+```{r}
+met[met$elev==9999.0] <- NA
+summary(met$elev)
+```
+
+```{r}
+met$date <- as.Date(paste(met$year, met$month, met$day, sep = "-"))
+met$date
+```
+
+```{r}
+#Create data table to sort by week?
+metweek1 <- met[,Week := week(met$date)]
+metweek1 <- filter(metweek1, Week == 31)
+```
+
+```{r}
+#Create mean by station of the variables temo, rh, wind.sp, vis.dist, dew.point, lat, lon and elev
+met_avg <- metweek1[,.(
+  temp     = mean(temp,na.rm=TRUE),
+  rh       = mean(rh,na.rm=TRUE),
+  wind.sp  = mean(wind.sp,na.rm=TRUE),
+  vis.dist = mean(vis.dist,na.rm=TRUE),
+  lat      = mean(lat),
+  lon      = mean(lon), 
+  elev     = mean(elev,na.rm=TRUE),
+  dew.point = mean(dew.point)
+), by=c("USAFID", "day")]
+```
+
+```{r}
+#Create a region variable for NW, SW, NE, SE
+met_avg$region <- ifelse(met_avg$lon < -98.00 & met_avg$lat >= 39.71, "NW",
+                           ifelse(met_avg$lon < -98.00 & met_avg$lat <39.71, "SW",
+                                  ifelse(met_avg$lon >= -98.00 & met_avg$lat >= 39.71, "NE",
+                                         ifelse(met_avg$lon >= -98.00 & met_avg$lat < 39.71, "SE", NA))))
+```
+
+```{r}
+met_avg[, elev_cat := ifelse(elev > 252, "high", "low")]
+```
+
+### 3. Use geom_violin to examine wind speed and dew point
+
+```{r}
+met_avg[!is.na(region)] |> 
+  ggplot() + 
+  geom_violin(mapping = aes(x = 1, y = met_avg$dew.point, color = met_avg$region)) + facet_wrap(~ region, nrow=1)
+```
+
+```{r}
+met_avg[!is.na(region)] |> 
+  ggplot() + 
+  geom_violin(mapping = aes(x = 1, y = met_avg$wind.sp, color = met_avg$region)) + facet_wrap(~ region, nrow=1)
+```
+
+Explain: With respect to dew point by region, we can see that there is more variability in the NW and SW regions with dew point having wide ranges. Overall it seems that the SE has higher dew points on average. Looking at wind speed, the NE seems to have wider wind speed averages.
+
+### 4. Geom_jitter with stat_smooth
+
+```{r}
+met_avg[!is.na(region)] |> 
+  ggplot() + 
+  geom_jitter(mapping = aes(x = met_avg$wind.sp, y = met_avg$dew.point, color = met_avg$region)) + stat_smooth(mapping = aes(x = wind.sp, y = dew.point))
+```
+
+From the graph we can see that dew point seems to aggregate with lower wind speeds. Higher dew points are observe in the SE but wind speed seems to vary within 0-5 most of the time during this first week in all regions.
+
+### 5. **Barplots of the weather stations by elevation category colored by region**
+
+```{r}
+met_avg[!is.na(region)] |>
+  ggplot() + 
+  geom_bar(mapping = aes(x = met_avg$elev_cat, fill = met_avg$region), position = "dodge") + 
+  scale_fill_brewer(palette = 2) +
+  labs(title = "Weather Station Elevation by Region") + 
+  labs(x = expression("Elevation Categories"), y = "Number of H or L Observations")
+```
+
+From the data we can see that the SE had a lot of observations at low elevations while the NE had more observations at high elevations.
+
+### 6. Stat_summary
+
+```{r}
+met_avg[!is.na(region)] |>
+  ggplot() + stat_summary(mapping = aes(x = met_avg$wind.sp, y = met_avg$region),
+    fun.data="mean_sdl", geom = "errorbar") 
+
+met_avg[!is.na(region)] |>
+  ggplot() + stat_summary(mapping = aes(x = met_avg$dew.point, y = met_avg$region),
+    fun.data="mean_sdl", geom = "errorbar")
+```
+
+Dew point is on average a wider range for SW and NW groups, but smaller ranges for SE and NE. SE had highest dew point ranges.
+
+Wind speed now is seen to vary over all four regions, with higher ranges in the SW and NW.
+
+### 7. Spatial Trend Humidity
+
+```{r}
+met_avg <- met_avg[!is.na(rh)]
+
+# Generating a color palette
+humidity.pal <- colorNumeric(c('lightpink','mediumpurple','mediumaquamarine'), domain=met_avg$rh)
+humidity.pal
+```
+
+```{r}
+met_avg <- met_avg[order(-met_avg$rh), ]
+top10 <- met_avg[rank(-rh) <= 10, ]
+top10
+top10$rh
+```
+
+```{r}
+humiditymap <- leaflet(met_avg) |> 
+  # The looks of the Map
+  addProviderTiles('CartoDB.Positron') |> 
+  # Some circles
+  addCircles(
+    lat = ~lat, lng=~lon,
+                                                  # HERE IS OUR PAL!
+    label = ~paste0(round(rh,2), ' C'), color = ~ humidity.pal(rh),
+    opacity = 1, fillOpacity = 1, radius = 500
+    ) |>
+  # And a pretty legend
+  addLegend('bottomleft', pal=humidity.pal, values=met_avg$rh,
+          title='Humidity', opacity=1)
+humiditymap
+```
+
+From the graph we can see that the humidity increase as you go East and South!
+
+### 8: GG Plot Extensions
+
+```{r}
+```
