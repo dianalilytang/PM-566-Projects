@@ -1,0 +1,258 @@
+---
+title: "Lab 5"
+author: "Diana Tang"
+format: 
+  html:
+    embed-resources: true
+editor: visual
+---
+
+**Libraries**
+
+```{r}
+library(lubridate)
+library(tidyverse)
+library(data.table)
+library(ggplot2)
+library(leaflet)
+library(dtplyr)
+library(dplyr)
+library(readxl)
+```
+
+**Load MET data**
+
+```{r}
+if (!file.exists("met_all.gz"))
+  download.file(
+    url = "https://raw.githubusercontent.com/USCbiostats/data-science-data/master/02_met/met_all.gz",
+    destfile = "met_all.gz",
+    method   = "libcurl",
+    timeout  = 60
+    )
+met <- data.table::fread("met_all.gz")
+```
+
+```{r}
+# Download the data
+stations <- fread("ftp://ftp.ncdc.noaa.gov/pub/data/noaa/isd-history.csv")
+stations[, USAF := as.integer(USAF)]
+
+# Dealing with NAs and 999999
+stations[, USAF   := fifelse(USAF == 999999, NA_integer_, USAF)]
+stations[, CTRY   := fifelse(CTRY == "", NA_character_, CTRY)]
+stations[, STATE  := fifelse(STATE == "", NA_character_, STATE)]
+
+# Selecting the three relevant columns, and keeping unique records
+stations <- unique(stations[, list(USAF, CTRY, STATE)])
+
+# Dropping NAs
+stations <- stations[!is.na(USAF)]
+
+# Removing duplicates
+stations[, n := 1:.N, by = .(USAF)]
+stations <- stations[n == 1,][, n := NULL]
+```
+
+```{r}
+merge(
+  # Data
+  x     = met,      
+  y     = stations, 
+  # List of variables to match
+  by.x  = "USAFID",
+  by.y  = "USAF", 
+  # Which obs to keep?
+  all.x = TRUE,      
+  all.y = FALSE
+  ) |> nrow()
+```
+
+```{r}
+met <- merge(
+  # Data
+  x     = met,      
+  y     = stations, 
+  # List of variables to match
+  by.x  = "USAFID",
+  by.y  = "USAF", 
+  # Which obs to keep?
+  all.x = TRUE,      
+  all.y = FALSE
+  )
+head(met[, list(USAFID, WBAN, STATE)], n = 4)
+```
+
+### **Question 1: Representative station for the US**
+
+```{r}
+met <- met[!is.na(temp)]
+met <- met[!is.na(wind.sp)]
+met <- met[!is.na(atm.press)]
+```
+
+```{r}
+summary(met$temp)
+summary(met$wind.sp)
+summary(met$atm.press)
+```
+
+```{r}
+q1 <- quantile(met$temp, probs = seq(0, 1, 0.50), na.rm = TRUE, type = 1)
+print(q1)
+
+q1a <- met |> filter(temp == 24.40) |> select(USAFID)
+print(q1a)
+```
+
+```{r}
+q2 <- quantile(met$wind.sp, probs = seq(0, 1, 0.50), na.rm = TRUE)
+print(q2)
+
+q2a <- met |> filter(wind.sp == 1014.1) |> select(USAFID)
+print(q2a)
+```
+
+```{r}
+q3 <- quantile(met$atm.press, probs = seq(0, 1, 0.50), na.rm = TRUE)
+print(q3)
+
+q3a <- met |> filter(atm.press == 1014.1) |> select(USAFID)
+print(q3a)
+```
+
+The sites of the median temp, wind speed, and atmospheric pressure had representative stations at 690150, 720175, and 720198.
+
+### **Question 2: Representative station for the US**
+
+```{r}
+#Get rid of NAs
+met <- filter(met, !is.na(temp),!is.na(USAFID),!is.na(STATE), !is.na(wind.sp), !is.na(atm.press), !is.na(lat), !is.na(lon))
+
+#Create new variable to account for euclidean distance
+met <- mutate(met,
+                 euclidean = (temp + wind.sp + atm.press) / 3 )
+#Group by states
+euclid <- met |> 
+  group_by(STATE) |> 
+  slice_min(order_by = euclidean)
+  
+euclid |> 
+  group_by(STATE) |> 
+  summarise(Count = n_distinct(USAFID))
+```
+
+As seen here, MA was found to have 2 stations. To correct for this we will then choose the minimum value for the median station.
+
+```{r}
+#Select the lowest min
+euclid <- euclid |> 
+  group_by(STATE) |> 
+  slice_min(order_by = lat)
+
+euclid <- euclid |> distinct(USAFID, .keep_all = TRUE)
+
+euclid |> 
+  group_by(STATE, USAFID) |> 
+  summarise(min(euclidean))
+```
+
+### **Question 3: Representative station for the US**
+
+```{r}
+#State midpoints
+midpoints=read_excel('midpoints.xlsx')
+
+midpoints$latmid <- midpoints$latitude
+midpoints$lonmid <- midpoints$longitude
+midpoints$STATE <- midpoints$state
+
+#Merge data
+combo <- merge(midpoints, met, by= 'STATE')
+
+#a^2 + b^c = c^2 - calculate the hypotenuse distance
+combo <- mutate(combo,
+       middy = sqrt(((lat-latmid) * (lat - latmid)) + ((lon - lonmid) * (lon - lonmid)))) 
+
+closeststation <- combo |> 
+  group_by(STATE) |> 
+  slice_min(order_by = middy)
+
+closeststation <- closeststation |> distinct(USAFID, .keep_all = TRUE)
+```
+
+```{r}
+leaflet() |> 
+  addProviderTiles('CartoDB.Positron') |> 
+  addCircles(data=closeststation, lat = ~lat, lng = ~lon, opacity = 1, fillOpacity = 1, radius = 50, color = "mediumaquamarine") |>
+  addCircles(data=euclid, lat= ~lat, lng = ~lon, color = "lightpink",opacity = 1, fillOpacity = 1, radius = 50) |>
+  addCircles(data=midpoints, lat= ~latmid, lng = ~lonmid, color = "mediumpurple",opacity = 1, fillOpacity = 1, radius = 50)
+```
+
+Graphed above are the stations that represent they have the closest distance to the state midpoints (medium aquamarine) and the median stations based on the euclidean formula (light pink). Shown in medium purple are the midpoints. Based on the data from met, only 46 states are shown.
+
+### **Question 4: Means of Means**
+
+```{r}
+metmet <- group_by(met, STATE, temp)
+
+avgtemp <- metmet |> group_by(STATE) |> 
+  summarise(meantemp = mean(temp),
+            .groups = 'drop')
+
+avgwind <- metmet |> group_by(STATE) |> 
+  summarise(meanwind = mean(wind.sp),
+            .groups = 'drop')
+
+avgpres <- metmet |> group_by(STATE) |> 
+  summarise(meanpres = mean(atm.press),
+            .groups = 'drop')
+
+avgtemp$temp_type <- as.factor(ifelse(avgtemp$meantemp<20, 'LOW',
+                                ifelse(avgtemp$meantemp<25, 'MID', 'HIGH')))
+ 
+avgtemp
+avgwind
+avgpres
+```
+
+**Number of temperature entries (records)**
+
+```{r}
+met |> group_by(STATE) |> 
+  summarise(Records = n_distinct(temp))
+```
+
+In total there were 6264 records.
+
+**Number of NA entries**
+
+```{r}
+met |> 
+  group_by(STATE) |>
+  summarise(Records = sum(is.na(temp)))
+```
+
+There were no NA entries.
+
+**Number of stations**
+
+```{r}
+met |> 
+  summarise(Stations = n_distinct(USAFID))
+
+met |> 
+  group_by(STATE) |>
+  summarise(Stations = n_distinct(USAFID))
+```
+
+There were 899 total observed stations.
+
+**Number of states included**
+
+```{r}
+met |> 
+  summarise(StateNumb = n_distinct(STATE))
+```
+
+46 total states were included.
