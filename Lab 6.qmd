@@ -1,0 +1,144 @@
+---
+title: "Lab 6"
+author: "Diana Tang"
+format: 
+  html:
+    embed-resources: true
+editor: visual
+---
+
+**Libraries**
+
+```{r}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(tidytext)
+library(lubridate)
+library(tidyverse)
+library(leaflet)
+library(dtplyr)
+```
+
+### Read in Medical Transcriptions
+
+```{r}
+if (!file.exists("mtsamples.csv"))
+  download.file(
+    url = "https://raw.githubusercontent.com/USCbiostats/data-science-data/master/00_mtsamples/mtsamples.csv",
+    destfile = "mtsamples.csv",
+    method   = "libcurl",
+    timeout  = 60
+    )
+mtsamples <- data.table::fread("mtsamples.csv")
+```
+
+### Step 1. **What specialties do we have?**
+
+```{r}
+saveRDS(mtsamples, file = "mtsamples.rds")
+mtsamplesRDS <- readRDS("mtsamples.rds")
+str(mtsamples)
+```
+
+```{r}
+# Use count() to get the count of each unique character in V3
+numberofspecialties <- mtsamples |>
+  count(V3)
+
+# Print the result
+print(numberofspecialties)
+```
+
+From this dataset we can see that there are 41 unique medical specialties. We can see that they don't seem to overlap with each category showing up uniquely - there are no repeats and they don't seem to be that related (Eg. Pediatric Surgery vs. Pediatric Allergy and Immunology). Additionally we can see that it is not evenly distributed as some specialties have \< 10 observations/inputs compared to like Cardiovascular... which has an n of 372.
+
+### Step 2. **Tokenize Transcription**
+
+```{r}
+mtsamplesRDS |>
+  unnest_tokens(token,V5) |>
+  count(token, sort = TRUE) |>
+  top_n(20, n)
+```
+
+### Step 3. Remove stop words and numbers
+
+```{r}
+mtsamplesRDS %>%
+  unnest_tokens(token, V5) %>%
+  anti_join(stop_words, by = c("token" = "word")) %>%
+  anti_join(data.frame(token = as.character(0:9)), by = "token") %>%
+  count(token, sort = TRUE)
+```
+
+After removing the stop_words and numbers, we can see that most of the text in transcription is centered around the patient. The top 20 words are typical to what we would see in charts of patients in both the outpatient and surgical settings.
+
+### Step 4. Tokenize into bi-grams and tri-grams
+
+```{r}
+mtsamplesRDS |>
+  unnest_ngrams(bigram, V5, n = 2) |>
+  count(bigram, sort = TRUE)
+```
+
+```{r}
+mtsamplesRDS |>
+  unnest_ngrams(trigram, V5, n = 3) |>
+  count(trigram, sort = TRUE)
+```
+
+Comparing the trigrams to bigrams, we can see that the top bigram of "the patient" was also within the top two trigrams of "the patient was" and "the patient is". However, once we observe the rest of the trigrams the bigrams no longer directly correlate with what is included in the top trigrams. The top bigrams include a lot of articles and verbs. The top trigrams give more context in what seem to be descriptive phrases of the patient, operational procedures, or just general descriptions of actions in the OR or clinic room.
+
+### Step 5. Pick word appears before and after
+
+```{r}
+mtsamplesRDS %>%
+  unnest_ngrams(bigram, V5, n = 2) %>%
+  separate(bigram, into = c("word1", "word2"), sep = " ") %>%
+  select(word1, word2) %>%
+  filter(word1 == "female") %>%
+  count(word2, sort = TRUE)
+```
+
+```{r}
+mtsamplesRDS %>%
+  unnest_ngrams(bigram, V5, n = 2) %>%
+  separate(bigram, into = c("word1", "word2"), sep = " ") %>%
+  select(word1, word2) %>%
+  filter(word2 == "female") %>%
+  count(word1, sort = TRUE)
+```
+
+The examples above first show when 'female' is the first word in the bigrams and then the second word in the bigrams. With females as the following the top first word are typical demographic descriptors.
+
+```{r}
+mtsamplesRDS %>%
+  unnest_ngrams(trigram, V5, n = 3) %>%
+  separate(trigram, into = c("word1", "word2", "word3"), sep = " ") %>%
+  select(word1, word2, word3) %>%
+  filter(word1 == "female") %>%
+  count(word2, word3, sort = TRUE)
+```
+
+```{r}
+mtsamplesRDS %>%
+  unnest_ngrams(trigram, V5, n = 3) %>%
+  separate(trigram, into = c("word1", "word2", "word3"), sep = " ") %>%
+  select(word1, word2, word3) %>%
+  filter(word3 == "female") %>%
+  count(word1, word2, sort = TRUE)
+```
+
+The examples above first show when 'female' is the first word in the trigrams and then the second word in the triigrams. With females as the following the top first word are typical demographic descriptors, as seen with the bigrams.
+
+### Step 6. Which words are most used in each of the specialties?
+
+```{r}
+mtsamplesRDS %>%
+  unnest_tokens(token, V5) %>%
+  anti_join(stop_words, by = c("token" = "word")) %>%
+  anti_join(data.frame(token = as.character(0:9)), by = "token") %>%
+  group_by(V3) %>%
+  count(token, sort = TRUE) %>%
+  top_n(5, n)
+```
